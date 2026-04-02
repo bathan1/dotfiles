@@ -1,0 +1,221 @@
+{
+    "$help": "https://aka.ms/terminal-documentation",
+    "$schema": "https://aka.ms/terminal-profiles-schema",
+    "actions": [],
+    "centerOnLaunch": true,
+    "copyFormatting": "none",
+    "copyOnSelect": false,
+    "defaultProfile": "{891d9351-1a25-57fa-bab2-74b2015fb637}",
+    "initialPosition": ",",
+    "keybindings": 
+    [
+        {
+            "id": "Terminal.PasteFromClipboard",
+            "keys": "ctrl+v"
+        },
+        {
+            "id": "Terminal.FindText",
+            "keys": "ctrl+shift+f"
+        },
+        {
+            "id": "Terminal.DuplicatePaneAuto",
+            "keys": "alt+shift+d"
+        }
+    ],
+    "launchMode": "default",
+    "newTabMenu": 
+    [
+        {
+            "type": "remainingProfiles"
+        }
+    ],
+    "profiles": 
+    {
+        "defaults": {},
+        "list": 
+        [
+            {
+                "commandline": "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "guid": "{61c54bbd-c2c6-5271-96e7-009a87ff44bf}",
+                "hidden": false,
+                "name": "Windows PowerShell"
+            },
+            {
+                "commandline": "%SystemRoot%\\System32\\cmd.exe",
+                "guid": "{0caa0dad-35be-5f56-a8ff-afceeeaa6101}",
+                "hidden": false,
+                "name": "Command Prompt"
+            },
+            {
+                "guid": "{b453ae62-4e3d-5e58-b989-0a998ec441b8}",
+                "hidden": false,
+                "name": "Azure Cloud Shell",
+                "source": "Windows.Terminal.Azure"
+            },
+            {
+                "backgroundImage": null,
+                "colorScheme": "FirefoxDev",
+                "commandline": "wsl.exe",
+                "experimental.retroTerminalEffect": false,
+                "font": 
+                {
+                    "face": "CaskaydiaMono Nerd Font Mono",
+                    "size": 18
+                },
+                "guid": "{891d9351-1a25-57fa-bab2-74b2015fb637}",
+                "hidden": false,
+                "name": "Ubuntu",
+                "opacity": 100,
+                "padding": "16",
+                "pathTranslationStyle": "wsl",
+                "source": "Microsoft.WSL",
+                "startingDirectory": "~",
+                "useAcrylic": false,
+                "suppressApplicationTitle": false
+            }
+        ]
+    },
+    "schemes": 
+    [
+        {
+            "background": "#272932",
+            "black": "#272932",
+            "blue": "#9381FF",
+            "brightBlack": "#7B8097",
+            "brightBlue": "#37EBF3",
+            "brightCyan": "#37EBF3",
+            "brightGreen": "#40FFE9",
+            "brightPurple": "#CB1DCD",
+            "brightRed": "#C71515",
+            "brightWhite": "#C1DEFF",
+            "brightYellow": "#FFF955",
+            "cursorColor": "#FDF500",
+            "cyan": "#00D0DB",
+            "foreground": "#E455AE",
+            "green": "#1AC5B0",
+            "name": "CyberPunk2077",
+            "purple": "#742D8B",
+            "red": "#710000",
+            "selectionBackground": "#742D8B",
+            "white": "#D1C5C0",
+            "yellow": "#FDF500"
+        },
+        {
+            "background": "#0E1011",
+            "black": "#002831",
+            "blue": "#359DDF",
+            "brightBlack": "#001E27",
+            "brightBlue": "#006FC0",
+            "brightCyan": "#005794",
+            "brightGreen": "#1D9000",
+            "brightPurple": "#A200DA",
+            "brightRed": "#E1003F",
+            "brightWhite": "#E2E2E2",
+            "brightYellow": "#CD9409",
+            "cursorColor": "#708284",
+            "cyan": "#4B73A2",
+            "foreground": "#7C8FA4",
+            "green": "#5EB83C",
+            "name": "FirefoxDev",
+            "purple": "#D75CFF",
+            "red": "#E63853",
+            "selectionBackground": "#163C61",
+            "white": "#DCDCDC",
+            "yellow": "#A57706"
+        },
+        {
+            "background": "#101216",
+            "black": "#000000",
+            "blue": "#6CA4F8",
+            "brightBlack": "#4D4D4D",
+            "brightBlue": "#6CA4F8",
+            "brightCyan": "#2B7489",
+            "brightGreen": "#56D364",
+            "brightPurple": "#DB61A2",
+            "brightRed": "#F78166",
+            "brightWhite": "#FFFFFF",
+            "brightYellow": "#E3B341",
+            "cursorColor": "#C9D1D9",
+            "cyan": "#2B7489",
+            "foreground": "#8B949E",
+            "green": "#56D364",
+            "name": "GitHub Dark",
+            "purple": "#DB61A2",
+            "red": "#F78166",
+            "selectionBackground": "#3B5070",
+            "white": "#FFFFFF",
+            "yellow": "#E3B341"
+        },
+        {
+            "background": "#300A24",
+            "black": "#171421",
+            "blue": "#0037DA",
+            "brightBlack": "#767676",
+            "brightBlue": "#08458F",
+            "brightCyan": "#2C9FB3",
+            "brightGreen": "#26A269",
+            "brightPurple": "#A347BA",
+            "brightRed": "#C01C28",
+            "brightWhite": "#F2F2F2",
+            "brightYellow": "#A2734C",
+            "cursorColor": "#FFFFFF",
+            "cyan": "#3A96DD",
+            "foreground": "#FFFFFF",
+            "green": "#26A269",
+            "name": "Ubuntu-ColorScheme",
+            "purple": "#881798",
+            "red": "#C21A23",
+            "selectionBackground": "#FFFFFF",
+            "white": "#CCCCCC",
+            "yellow": "#A2734C"
+        },
+        {
+            "background": "#09090B",
+            "black": "#0D0D0D",
+            "blue": "#79A8FF",
+            "brightBlack": "#565656",
+            "brightBlue": "#9EC1FF",
+            "brightCyan": "#C5DBFF",
+            "brightGreen": "#46D790",
+            "brightPurple": "#DCB4FF",
+            "brightRed": "#FF9AB6",
+            "brightWhite": "#FFFFFF",
+            "brightYellow": "#FFF0C2",
+            "cursorColor": "#EDEDED",
+            "cyan": "#9DBFF9",
+            "foreground": "#EDEDED",
+            "green": "#2CB67D",
+            "name": "Vercel",
+            "purple": "#CF94FF",
+            "red": "#FF7A9F",
+            "selectionBackground": "#EDEDED",
+            "white": "#EDEDED",
+            "yellow": "#FFE29A"
+        },
+        {
+            "background": "#171717",
+            "black": "#000000",
+            "blue": "#5DA9F6",
+            "brightBlack": "#313131",
+            "brightBlue": "#A5C7FF",
+            "brightCyan": "#B7FFF9",
+            "brightGreen": "#DDF88F",
+            "brightPurple": "#DDAAFF",
+            "brightRed": "#F58C80",
+            "brightWhite": "#FFFFFF",
+            "brightYellow": "#EEE5B2",
+            "cursorColor": "#BBBBBB",
+            "cyan": "#82FFF7",
+            "foreground": "#DEDACF",
+            "green": "#B1E969",
+            "name": "Wombat",
+            "purple": "#E86AFF",
+            "red": "#FF615A",
+            "selectionBackground": "#453B39",
+            "white": "#DEDACF",
+            "yellow": "#EBD99C"
+        }
+    ],
+    "themes": [],
+    "windowingBehavior": "useAnyExisting"
+}
