@@ -19,7 +19,8 @@ The download URL becomes available once this change is pushed to `main`. You can
 also run `bash setup.sh` from this checkout. Review the downloaded script before
 running it. No repository checkout or adjacent files are required.
 
-The menu offers **GitHub SSH**, **Node.js + TypeScript + pnpm**, or **both**.
+The menu offers **GitHub SSH**, **Node.js + TypeScript + pnpm**, their combination,
+**Python 3.15 + uv**, or **all three components**. Choose **4** for Python or **5** for all.
 It supports native Ubuntu 22.04+ and Ubuntu under WSL, with Bash and Zsh shell
 initialization. Run it as your normal user: it requests `sudo` for system packages
 only. It needs internet access and an interactive terminal. WSL installations
@@ -94,11 +95,37 @@ pnpm add --save-dev typescript
 pnpm exec tsc --init
 ```
 
+## Python and uv
+
+Python has no separate LTS release line. This setup uses **Python 3.15**, a stable
+release supported through October 2031 according to the [Python support schedule][python-support].
+It installs [uv][uv-install] with Astral's installer into `~/.local/bin` if missing
+and reuses an existing working uv installation. A broken uv command stops setup.
+
+uv installs its managed Python 3.15 distribution with a versioned executable
+(`python3.15`), leaving the system `python3` unchanged. Reruns reuse an installed
+3.15 version; setup does not force upgrades or replace conflicting executables.
+Bash and Zsh receive managed PATH blocks for uv and Python, including custom
+`UV_PYTHON_BIN_DIR` and `ZDOTDIR` locations. Each job reports success or failure,
+and any failure stops setup.
+
+Open a new terminal after setup. To create a project environment:
+
+```bash
+uv venv --python 3.15
+uv pip install requests
+uv run --python 3.15 python --version
+```
+
+To update later, use `uv python upgrade 3.15`; update uv through its original
+installation method (`uv self update` for the standalone installer).
+
 ## Reruns and recovery
 
-Rerun the script and select the incomplete component. A component failure does
-not prevent another selected component from running; any failure produces a
-nonzero exit status and a summary. Successful changes remain in place for the
+Rerun the script and select the incomplete component. Each job prints a start
+message and its success or failure, with color in terminals (set `NO_COLOR=1` to
+disable color). The first failure stops the entire script with a nonzero exit
+status; remaining jobs are not run. Successful changes remain in place for the
 next run. This is installation/repair, not an automatic upgrade or uninstall tool.
 
 Changed user configuration files receive adjacent
@@ -134,9 +161,12 @@ The unit tests use temporary homes and mocked GitHub/network/package commands.
 The container smoke test downloads real nvm/Node/npm packages, checks fresh Bash
 and Zsh sessions, compiles TypeScript, and repeats installation to verify stable
 state. It also exercises an older Node default and installs GitHub CLI without
-logging into GitHub. Change the Docker build argument `UBUNTU_VERSION` to test
+logging into GitHub. It also installs Python and uv, creates a virtual environment,
+and checks fresh shells and repeated runs. Change the Docker build argument `UBUNTU_VERSION` to test
 another Ubuntu release. Live browser authorization, account key upload, and
 WSL-specific integration require manual testing on an appropriate machine.
 
 [fingerprints]: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
 [gh-linux]: https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+[python-support]: https://devguide.python.org/versions/
+[uv-install]: https://docs.astral.sh/uv/getting-started/installation/

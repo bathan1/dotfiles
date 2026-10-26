@@ -45,3 +45,14 @@ ensure_gh
 gh --version
 ensure_gh
 printf 'GitHub CLI installation and repeated-run checks passed (no authentication).\n'
+
+(setup_python)
+bash -ic 'uv --version && python3.15 --version'
+zsh -ic 'uv --version && python3.15 --version'
+before=$(sha256sum "$HOME/.bashrc" "$HOME/.zshrc")
+(setup_python)
+after=$(sha256sum "$HOME/.bashrc" "$HOME/.zshrc")
+[[ $before == "$after" ]]
+"$HOME/.local/bin/uv" venv --python 3.15 --managed-python "$WORK/python-project/.venv"
+"$WORK/python-project/.venv/bin/python" -c 'import ssl, sqlite3; print("Python environment works")'
+printf 'Python and uv install, fresh shells, virtual environment, and repeated-run checks passed.\n'

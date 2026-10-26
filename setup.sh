@@ -3,7 +3,31 @@
 # This file is self-contained so it can be downloaded without cloning the repo.
 
 say() { printf '%s\n' "$*"; }
-fail() { printf 'Error: %s\n' "$*" >&2; return 1; }
+
+log_status() {
+    local color=$1 label=$2
+    shift 2
+    if [[ -t 1 && -z ${NO_COLOR:-} && ${TERM:-} != dumb ]]; then
+        printf '\033[%sm[%s]\033[0m %s\n' "$color" "$label" "$*"
+    else
+        printf '[%s] %s\n' "$label" "$*"
+    fi
+}
+
+fail() { log_status 31 ERROR "$*" >&2; return 1; }
+
+run_job() {
+    local label=$1 status
+    shift
+    log_status 36 RUN "$label"
+    if "$@"; then
+        log_status 32 SUCCESS "$label"
+    else
+        status=$?
+        log_status 31 FAILURE "$label (exit $status)" >&2
+        return "$status"
+    fi
+}
 
 ask() {
     printf '%s ' "$1" >&3
@@ -24,8 +48,8 @@ ensure_packages() {
     done
     ((${#missing[@]})) || return 0
     command -v sudo >/dev/null || { fail "Install sudo or ask an administrator to install: ${missing[*]}"; return 1; }
-    say "Installing system packages: ${missing[*]}"
-    sudo apt-get update && sudo apt-get install -y -- "${missing[@]}"
+    run_job 'Update apt package index' sudo apt-get update || return $?
+    run_job "Install system packages: ${missing[*]}" sudo apt-get install -y -- "${missing[@]}"
 }
 
 # Replacements follow symlinks, preserve permissions, and back up only changed files.
@@ -116,7 +140,8 @@ ensure_gh() {
     printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
         "$(dpkg --print-architecture)" > "$WORK/github-cli.list"
     sudo install -m 644 "$WORK/github-cli.list" /etc/apt/sources.list.d/dev-setup-github-cli.list || return 1
-    sudo apt-get update && sudo apt-get install -y gh || return 1
+    run_job 'Update GitHub CLI apt package index' sudo apt-get update || return $?
+    run_job 'Install GitHub CLI package' sudo apt-get install -y gh || return $?
     hash -r
     version=$(gh --version | head -n 1 | awk '{print $3}')
     dpkg --compare-versions "$version" ge 2.50.0 || { fail 'An older gh executable shadows the installed CLI on PATH.'; return 1; }
@@ -128,8 +153,8 @@ choose_github_account() {
     # Environment tokens would override the account chosen through gh auth switch.
     unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
     unset GH_PROMPT_DISABLED
-    export GH_HOST=github.com NO_COLOR=1
-    gh auth status --hostname github.com > "$WORK/gh-status" 2>&1 || true
+    export GH_HOST=github.com
+    NO_COLOR=1 gh auth status --hostname github.com > "$WORK/gh-status" 2>&1 || true
     while IFS= read -r account; do
         [[ -n $account ]] && accounts+=("$account")
     done < <(sed -nE 's/.*Logged in to github\.com account ([A-Za-z0-9-]+).*/\1/p' "$WORK/gh-status" | sort -u)
@@ -291,28 +316,28 @@ verify_github() {
 
 setup_github() {
     local key alias fingerprint
-    ensure_packages ca-certificates curl git openssh-client python3 util-linux || return 1
-    ensure_gh || return 1
-    choose_github_account || return 1
+    run_job 'GitHub system dependencies' ensure_packages ca-certificates curl git openssh-client python3 util-linux || return $?
+    run_job 'GitHub CLI' ensure_gh || return $?
+    run_job 'GitHub account authentication' choose_github_account || return $?
     mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh" || return 1
     key="$HOME/.ssh/id_ed25519_github_$GITHUB_LOGIN"
     alias="github-$GITHUB_LOGIN"
-    ensure_key "$key" "$GITHUB_LOGIN" || return 1
-    install_agent_helper || return 1
-    ssh-add "$key" <&3 || return 1
+    run_job 'SSH key' ensure_key "$key" "$GITHUB_LOGIN" || return $?
+    run_job 'SSH agent helper script' install_agent_helper || return $?
+    run_job 'Load SSH key into agent' ssh-add "$key" <&3 || return $?
     fingerprint=$(ssh-keygen -lf "$key.pub" | awk '{print $2}')
     ssh-add -l | awk '{print $2}' | grep -Fxq -- "$fingerprint" || {
         fail 'The public key does not match the loaded private key; repair the .pub file before rerunning.'
         return 1
     }
-    upload_key "$key" || return 1
-    configure_ssh_host "$alias" "$key" || return 1
-    verify_github "$alias" "$GITHUB_LOGIN" || return 1
+    run_job 'Register GitHub SSH key' upload_key "$key" || return $?
+    run_job "Configure SSH host: $alias" configure_ssh_host "$alias" "$key" || return $?
+    run_job "Verify GitHub SSH: $alias" verify_github "$alias" "$GITHUB_LOGIN" || return $?
     say "Clone URL: git@$alias:OWNER/REPOSITORY.git"
     if confirm "Also make $GITHUB_LOGIN the default account for github.com?"; then
-        configure_ssh_host github.com "$key" || return 1
-        verify_github github.com "$GITHUB_LOGIN" || return 1
-        gh config set git_protocol ssh --host github.com || return 1
+        run_job 'Configure default GitHub SSH host' configure_ssh_host github.com "$key" || return $?
+        run_job 'Verify default GitHub SSH host' verify_github github.com "$GITHUB_LOGIN" || return $?
+        run_job 'Set GitHub CLI SSH protocol' gh config set git_protocol ssh --host github.com || return $?
     fi
 }
 
@@ -364,25 +389,25 @@ JS
 
 setup_node() {
     local default_version selected_prefix npm_prefix
-    ensure_packages ca-certificates curl git python3 xz-utils || return 1
+    run_job 'Node.js system dependencies' ensure_packages ca-certificates curl git python3 xz-utils || return $?
     export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
     if [[ ! -s $NVM_DIR/nvm.sh ]]; then
         if [[ -d $NVM_DIR && -n $(ls -A "$NVM_DIR") ]]; then
             fail "$NVM_DIR is nonempty but has no nvm.sh; repair or move it before rerunning."
             return 1
         fi
-        curl --fail --silent --show-error --location --proto '=https' \
-            https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh -o "$WORK/install-nvm.sh" || return 1
-        PROFILE=/dev/null bash "$WORK/install-nvm.sh" || return 1
+        run_job 'Download nvm install script' curl --fail --silent --show-error --location --proto '=https' \
+            https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh -o "$WORK/install-nvm.sh" || return $?
+        run_job 'Run nvm install script' env PROFILE=/dev/null bash "$WORK/install-nvm.sh" || return $?
     fi
     # shellcheck source=/dev/null
-    . "$NVM_DIR/nvm.sh" --no-use || return 1
+    run_job 'Load nvm script' . "$NVM_DIR/nvm.sh" --no-use || return $?
     default_version=$(nvm version default) || default_version=N/A
     if [[ $default_version == v* ]] && nvm use --silent "$default_version" && node --version && npm --version; then
         say "Keeping default Node $default_version."
     else
-        nvm install --lts || return 1
-        nvm alias default "$(nvm current)" || return 1
+        run_job 'Install Node.js LTS' nvm install --lts || return $?
+        run_job 'Set default Node.js version' nvm alias default "$(nvm current)" || return $?
     fi
     selected_prefix=$(dirname "$(dirname "$(command -v node)")")
     npm_prefix=$(npm prefix --global) || return 1
@@ -390,20 +415,73 @@ setup_node() {
         fail 'Node/npm are not using the selected nvm prefix. Check PATH and npm prefix settings.'
         return 1
     }
-    configure_nvm_shells || return 1
+    run_job 'Configure nvm shell initialization' configure_nvm_shells || return $?
     # Run outside a project so local npm configuration and packageManager pins do not interfere.
     cd "$WORK" || return 1
-    install_node_package pnpm pnpm || return 1
-    install_node_package typescript tsc || return 1
+    run_job 'pnpm' install_node_package pnpm pnpm || return $?
+    run_job 'TypeScript' install_node_package typescript tsc || return $?
     node --version && npm --version && pnpm --version && tsc --version || return 1
     say 'Node tooling is ready. Open a new Bash/Zsh terminal to load nvm.'
+}
+
+ensure_uv() {
+    if ! command -v uv >/dev/null; then
+        export PATH="$HOME/.local/bin:$PATH"
+    fi
+    if command -v uv >/dev/null; then
+        uv --version || return $?
+        say 'Keeping installed uv.'
+        return 0
+    fi
+    run_job 'Download uv install script' curl --fail --silent --show-error --location --proto '=https' \
+        https://astral.sh/uv/install.sh -o "$WORK/install-uv.sh" || return $?
+    run_job 'Run uv install script' env UV_INSTALL_DIR="$HOME/.local/bin" UV_NO_MODIFY_PATH=1 \
+        sh "$WORK/install-uv.sh" || return $?
+    hash -r
+    uv --version
+}
+
+configure_python_shells() {
+    local directory quoted body='' line
+    for directory in "$@"; do
+        printf -v quoted '%q' "$directory"
+        # shellcheck disable=SC2016
+        printf -v line 'case ":$PATH:" in *:%s:*) ;; *) export PATH=%s:"$PATH" ;; esac' "$quoted" "$quoted"
+        body+="$line"$'\n'
+        case ":$PATH:" in
+            *:"$directory":*) ;;
+            *) export PATH="$directory:$PATH" ;;
+        esac
+    done
+    configure_shells python-uv "$body"
+}
+
+verify_python() {
+    local executable
+    executable=$(uv python find 3.15 --managed-python --system --no-project --no-config) || return $?
+    "$executable" --version
+}
+
+setup_python() {
+    local uv_directory python_directory
+    run_job 'Python system dependencies' ensure_packages ca-certificates curl python3 || return $?
+    run_job 'uv' ensure_uv || return $?
+    # Run outside a project so its configuration cannot select the setup interpreter.
+    cd "$WORK" || return 1
+    say 'Python has no separate LTS release; installing supported stable Python 3.15.'
+    run_job 'Python 3.15' uv python install 3.15 --no-config || return $?
+    uv_directory=$(dirname "$(command -v uv)") || return $?
+    python_directory=$(uv python dir --bin --no-config) || return $?
+    run_job 'Configure Python and uv shell paths' configure_python_shells "$uv_directory" "$python_directory" || return $?
+    run_job 'Verify managed Python 3.15' verify_python || return $?
+    say 'Python tooling is ready. Open a new Bash/Zsh terminal, then use: uv run --python 3.15 python'
 }
 
 main() {
     case ${1:-} in
         -h|--help)
             say 'Usage: bash setup.sh'
-            say 'Interactive Ubuntu/WSL setup: GitHub SSH, Node.js + TypeScript + pnpm, or both.'
+            say 'Interactive Ubuntu/WSL setup: GitHub SSH, Node.js + TypeScript + pnpm, Python + uv, or all.'
             return 0 ;;
         '') ;;
         *) fail 'Unknown argument. Use --help.'; return 1 ;;
@@ -424,36 +502,30 @@ main() {
     say 'Developer environment setup'
     say '  1) GitHub SSH automation'
     say '  2) Node.js + TypeScript + pnpm'
-    say '  3) Both'
+    say '  3) GitHub SSH + Node.js'
+    say '  4) Python 3.15 + uv'
+    say '  5) All'
     say '  q) Quit'
-    local selection status=0 result component_status
-    local -a components=() results=()
+    local selection
+    local -a components=()
     while true; do
-        ask 'Choose [1/2/3/q]:' || return 1
+        ask 'Choose [1/2/3/4/5/q]:' || return 1
         selection=$REPLY
         case $selection in
             1) components=(github); break ;;
             2) components=(node); break ;;
             3|'1 2'|'1,2') components=(github node); break ;;
+            4) components=(python); break ;;
+            5) components=(github node python); break ;;
             q|Q) return 0 ;;
-            *) say 'Enter 1, 2, 3, or q.' ;;
+            *) say 'Enter 1, 2, 3, 4, 5, or q.' ;;
         esac
     done
     say "Selected: ${components[*]}"
     for selection in "${components[@]}"; do
-        say "--- Setting up $selection ---"
-        if ("setup_$selection"); then
-            results+=("$selection: ready")
-        else
-            component_status=$?
-            say "Error: $selection setup failed (exit $component_status); continuing with any remaining selected components." >&2
-            results+=("$selection: failed (exit $component_status) — fix the error above and rerun this component")
-            status=1
-        fi
+        (run_job "$selection setup" "setup_$selection") || return $?
     done
-    say ''
-    for result in "${results[@]}"; do say "$result"; done
-    return "$status"
+    log_status 32 SUCCESS 'All selected setup jobs completed.'
 }
 
 if [[ -z ${BASH_SOURCE[0]:-} || ${BASH_SOURCE[0]} == "$0" ]]; then

@@ -273,7 +273,170 @@ test -n "$pid" && kill "$pid"
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((nvm / 'keep').read_text(), 'existing')
 
-    def test_main_runs_other_component_after_failure(self):
+    def mock_uv(self, install_status=0):
+        """`mock_uv(install_status)` is a uv stub with Python installation exit status INSTALL_STATUS."""
+        self.mock('uv', f'''
+echo "$*" >> "$HOME/uv-calls"
+case "$1 $2" in
+    '--version ') echo 'uv test-version' ;;
+    'python install') exit {install_status} ;;
+    'python dir') echo "${{UV_PYTHON_BIN_DIR:-$HOME/.local/bin}}" ;;
+    'python find') echo /usr/bin/python3 ;;
+    *) exit 99 ;;
+esac
+''')
+
+    def test_python_setup_reuses_uv_and_preserves_shell_files_on_rerun(self):
+        self.mock_uv()
+        self.mock('curl', 'touch "$HOME/unexpected-download"; exit 99')
+        self.env['ZDOTDIR'] = str(self.home / 'zsh settings')
+        self.env['UV_PYTHON_BIN_DIR'] = str(self.home / 'python binaries')
+        (self.home / '.bashrc').write_text('export EXISTING=yes\n')
+        code = 'ensure_packages() { :; }; setup_python'
+        self.run_shell(code)
+        rc_paths = [self.home / '.bashrc', pathlib.Path(self.env['ZDOTDIR']) / '.zshrc']
+        before = [(rc.read_bytes(), rc.stat().st_mtime_ns) for rc in rc_paths]
+        self.run_shell(code)
+        self.assertEqual(before, [(rc.read_bytes(), rc.stat().st_mtime_ns) for rc in rc_paths])
+        self.assertIn('export EXISTING=yes', rc_paths[0].read_text())
+        self.assertFalse((self.home / 'unexpected-download').exists())
+        calls = (self.home / 'uv-calls').read_text()
+        self.assertIn('python install 3.15 --no-config', calls)
+        self.assertIn('python find 3.15 --managed-python --system --no-project --no-config', calls)
+        for shell, rc in zip(('bash', 'zsh'), rc_paths):
+            result = subprocess.run(
+                [shell, '-c', '. "$1"; . "$1"; printf "%s" "$PATH"', shell, str(rc)],
+                env=self.env, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.split(':').count(self.env['UV_PYTHON_BIN_DIR']), 1)
+            self.assertEqual(result.stdout.split(':').count(str(self.bin)), 1)
+
+    def test_python_install_failure_stops_before_shell_configuration(self):
+        self.mock_uv(install_status=23)
+        result = self.run_shell('ensure_packages() { :; }; setup_python', check=False)
+        self.assertEqual(result.returncode, 23)
+        self.assertIn('[FAILURE] Python 3.15 (exit 23)', result.stderr)
+        self.assertFalse((self.home / '.bashrc').exists())
+        self.assertNotIn('python find', (self.home / 'uv-calls').read_text())
+
+    def test_broken_uv_is_not_overwritten(self):
+        self.mock('uv', 'exit 17')
+        self.mock('curl', 'touch "$HOME/unexpected-download"')
+        result = self.run_shell('ensure_packages() { :; }; setup_python', check=False)
+        self.assertEqual(result.returncode, 17)
+        self.assertFalse((self.home / 'unexpected-download').exists())
+
+    def test_missing_uv_is_installed_without_unmanaged_shell_changes(self):
+        self.mock('curl', '''
+while [[ $# -gt 0 ]]; do
+    if [[ $1 == -o ]]; then cp "$HOME/installer" "$2"; exit; fi
+    shift
+done
+exit 99
+''')
+        (self.home / 'installer').write_text('''
+test "$UV_INSTALL_DIR" = "$HOME/.local/bin" || exit 98
+test "$UV_NO_MODIFY_PATH" = 1 || exit 97
+mkdir -p "$UV_INSTALL_DIR"
+printf '#!/bin/sh\necho uv-test\n' > "$UV_INSTALL_DIR/uv"
+chmod +x "$UV_INSTALL_DIR/uv"
+''')
+        result = self.run_shell('ensure_uv')
+        self.assertTrue((self.home / '.local/bin/uv').is_file())
+        self.assertIn('[SUCCESS] Run uv install script', result.stdout)
+        self.assertFalse((self.home / '.bashrc').exists())
+
+    def test_failed_uv_download_never_runs_installer(self):
+        self.mock('curl', 'exit 22')
+        result = self.run_shell('ensure_packages() { :; }; setup_python', check=False)
+        self.assertEqual(result.returncode, 22)
+        self.assertNotIn('[RUN] Run uv install script', result.stdout)
+
+    def test_python_and_all_menu_choices(self):
+        import fcntl
+        import pty
+        import termios
+
+        for choice, expected in [('4', ['python']), ('5', ['github', 'node', 'python'])]:
+            with self.subTest(choice=choice):
+                master, slave = pty.openpty()
+
+                def terminal_session():
+                    """`terminal_session()` is the child process's independent controlling terminal setup."""
+                    os.setsid()
+                    fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+                code = '''
+setup_github() { echo github >> "$HOME/jobs"; }
+setup_node() { echo node >> "$HOME/jobs"; }
+setup_python() { echo python >> "$HOME/jobs"; }
+ask() { REPLY=''' + choice + '''; }
+main
+'''
+                try:
+                    result = subprocess.run(
+                        ['bash', '-c', 'source ' + shlex.quote(str(SCRIPT)) + '\n' + code],
+                        env=self.env, stdin=slave, capture_output=True, text=True,
+                        preexec_fn=terminal_session, timeout=30,
+                    )
+                finally:
+                    os.close(master)
+                    os.close(slave)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((self.home / 'jobs').read_text().splitlines(), expected)
+                (self.home / 'jobs').unlink()
+
+    def test_job_reports_success_and_preserves_shell_state(self):
+        result = self.run_shell('''
+configure() { export JOB_VALUE="$1"; }
+run_job 'Configure environment' configure 'value with spaces'
+test "$JOB_VALUE" = 'value with spaces'
+''')
+        self.assertIn('[RUN] Configure environment', result.stdout)
+        self.assertIn('[SUCCESS] Configure environment', result.stdout)
+        self.assertNotIn('\033[', result.stdout)
+
+    def test_job_reports_failure_and_preserves_exit_status(self):
+        result = self.run_shell("run_job 'Broken install' bash -c 'exit 23'", check=False)
+        self.assertEqual(result.returncode, 23)
+        self.assertIn('[RUN] Broken install', result.stdout)
+        self.assertIn('[FAILURE] Broken install (exit 23)', result.stderr)
+        self.assertNotIn('[SUCCESS]', result.stdout)
+
+    def test_job_colors_terminal_output_and_honors_no_color(self):
+        import pty
+
+        for no_color in ('', '1'):
+            with self.subTest(no_color=no_color):
+                master, slave = pty.openpty()
+                try:
+                    result = subprocess.run(
+                        ['bash', '-c', 'source ' + shlex.quote(str(SCRIPT)) +
+                         '\nrun_job Good true; run_job Bad false'],
+                        env=dict(self.env, TERM='xterm', NO_COLOR=no_color),
+                        stdout=slave, stderr=slave, timeout=30,
+                    )
+                    output = os.read(master, 4096).decode()
+                finally:
+                    os.close(master)
+                    os.close(slave)
+                self.assertEqual(result.returncode, 1)
+                if no_color:
+                    self.assertNotIn('\033[', output)
+                else:
+                    for color, label in [('36', 'RUN'), ('32', 'SUCCESS'), ('31', 'FAILURE')]:
+                        self.assertIn(f'\033[{color}m[{label}]\033[0m', output)
+
+    def test_failed_package_index_update_skips_install(self):
+        self.mock('dpkg-query', 'exit 1')
+        self.mock('sudo', 'echo "$*" >> "$HOME/sudo-calls"; exit 19')
+        result = self.run_shell('ensure_packages missing-tool', check=False)
+        self.assertEqual(result.returncode, 19)
+        self.assertEqual((self.home / 'sudo-calls').read_text().splitlines(), ['apt-get update'])
+        self.assertIn('[FAILURE] Update apt package index (exit 19)', result.stderr)
+
+    def test_main_stops_after_component_failure(self):
         code = '''
 ensure_packages() { :; }
 setup_github() { return 1; }
@@ -299,9 +462,10 @@ main
                                 env=self.env, stdin=slave, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, preexec_fn=terminal_session, timeout=30)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertTrue((self.home / 'node-ran').exists(), result.stdout + result.stderr)
-        self.assertIn('github: failed', result.stdout)
-        self.assertIn('node: ready', result.stdout)
+        self.assertFalse((self.home / 'node-ran').exists(), result.stdout + result.stderr)
+        self.assertIn('[FAILURE] github setup (exit 1)', result.stderr)
+        self.assertNotIn('[RUN] node setup', result.stdout)
+        self.assertNotIn('All selected setup jobs completed', result.stdout)
 
     def test_piped_script_starts_menu_and_reads_terminal_input(self):
         import fcntl
@@ -373,14 +537,17 @@ esac
                         os.close(slave)
 
                     output = result.stdout + result.stderr
-                    self.assertEqual(result.returncode, int(auth_status != 0), output)
-                    self.assertTrue((self.home / 'node-ran').exists(), output)
-                    self.assertIn('node: ready', result.stdout)
+                    self.assertEqual(result.returncode, auth_status, output)
+                    self.assertEqual((self.home / 'node-ran').exists(), auth_status == 0, output)
                     if auth_status:
                         self.assertIn('GitHub browser authentication failed (exit 17)', result.stderr)
-                        self.assertIn('github setup failed (exit 17)', result.stderr)
+                        self.assertIn('[FAILURE] github setup (exit 17)', result.stderr)
+                        self.assertNotIn('[RUN] node setup', result.stdout)
+                        self.assertNotIn('All selected setup jobs completed', result.stdout)
                     else:
-                        self.assertIn('github: ready', result.stdout)
+                        self.assertIn('[SUCCESS] github setup', result.stdout)
+                        self.assertIn('[SUCCESS] node setup', result.stdout)
+                        self.assertIn('All selected setup jobs completed', result.stdout)
 
 
 if __name__ == '__main__':
