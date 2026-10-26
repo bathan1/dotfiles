@@ -1,0 +1,5 @@
+*
+!setup.sh
+!tests/
+!tests/**
+**/__pycache__/
