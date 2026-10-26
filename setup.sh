@@ -123,7 +123,7 @@ ensure_gh() {
 }
 
 choose_github_account() {
-    local account index=1 choice current
+    local account index=1 choice current status
     local -a accounts=()
     # Environment tokens would override the account chosen through gh auth switch.
     unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
@@ -146,7 +146,13 @@ choose_github_account() {
         say 'Enter a number from the list.'
     done
     if ((10#$choice == index)); then
-        gh auth login --hostname github.com --git-protocol ssh --web --skip-ssh-key --scopes admin:public_key <&3 || return 1
+        say 'Waiting for GitHub browser authentication to finish...'
+        gh auth login --hostname github.com --git-protocol ssh --web --skip-ssh-key --scopes admin:public_key <&3 || {
+            status=$?
+            fail "GitHub browser authentication failed (exit $status)."
+            return "$status"
+        }
+        say 'GitHub browser authentication completed.'
     else
         current=$(gh api user --jq .login 2>/dev/null) || current=''
         account=${accounts[$((10#$choice - 1))]}
@@ -154,7 +160,11 @@ choose_github_account() {
             gh auth switch --hostname github.com --user "$account" || return 1
         fi
     fi
-    GITHUB_LOGIN=$(gh api user --jq .login) || return 1
+    GITHUB_LOGIN=$(gh api user --jq .login) || {
+        status=$?
+        fail "Could not confirm the authenticated GitHub account (exit $status)."
+        return "$status"
+    }
     [[ $GITHUB_LOGIN =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || { fail 'GitHub returned an invalid username.'; return 1; }
     say "Selected GitHub account: $GITHUB_LOGIN"
 }
@@ -409,14 +419,14 @@ main() {
     umask 077
     WORK=$(mktemp -d "${TMPDIR:-/tmp}/dev-setup.XXXXXXXX") || return 1
     trap 'rm -rf -- "$WORK"' EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+    trap 'say "Setup interrupted (SIGINT); remaining components were not run." >&2; exit 130' INT
+    trap 'say "Setup terminated (SIGTERM); remaining components were not run." >&2; exit 143' TERM
     say 'Developer environment setup'
     say '  1) GitHub SSH automation'
     say '  2) Node.js + TypeScript + pnpm'
     say '  3) Both'
     say '  q) Quit'
-    local selection status=0 result
+    local selection status=0 result component_status
     local -a components=() results=()
     while true; do
         ask 'Choose [1/2/3/q]:' || return 1
@@ -435,7 +445,9 @@ main() {
         if ("setup_$selection"); then
             results+=("$selection: ready")
         else
-            results+=("$selection: failed — fix the error above and rerun this component")
+            component_status=$?
+            say "Error: $selection setup failed (exit $component_status); continuing with any remaining selected components." >&2
+            results+=("$selection: failed (exit $component_status) — fix the error above and rerun this component")
             status=1
         fi
     done

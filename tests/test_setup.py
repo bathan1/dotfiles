@@ -193,6 +193,19 @@ esac
         self.assertIn('--web --skip-ssh-key', call)
         self.assertIn('admin:public_key', call)
 
+    def test_account_lookup_failure_reports_exit_status(self):
+        self.mock('gh', '''
+case "$1 $2" in
+  'auth status') exit 1 ;;
+  'auth login') exit 0 ;;
+  'api user') exit 23 ;;
+esac
+''')
+        result = self.run_shell('choose_github_account', '1\n', check=False)
+        self.assertEqual(result.returncode, 23)
+        self.assertIn('authentication completed', result.stdout)
+        self.assertIn('Could not confirm the authenticated GitHub account (exit 23)', result.stderr)
+
     def test_ssh_alias_is_idempotent_and_resolves_correctly(self):
         ssh_dir = self.home / '.ssh'
         ssh_dir.mkdir()
@@ -313,6 +326,61 @@ main
         self.assertIn('Developer environment setup', result.stdout)
         self.assertIn('1) GitHub SSH automation', result.stdout)
         self.assertNotIn('Setting up', result.stdout)
+
+    def test_both_selection_continues_after_browser_authentication(self):
+        import fcntl
+        import pty
+        import termios
+
+        script = SCRIPT.read_text()
+        entrypoint = script.index('\nif [[ -z ${BASH_SOURCE')
+        overrides = '''
+setup_github() { choose_github_account; }
+setup_node() { touch "$HOME/node-ran"; }
+'''
+        script = script[:entrypoint] + overrides + script[entrypoint:]
+        saved_script = self.home / 'setup.sh'
+        saved_script.write_text(script)
+
+        for invocation in ('piped', 'file'):
+            for auth_status in (0, 17):
+                with self.subTest(invocation=invocation, auth_status=auth_status):
+                    (self.home / 'node-ran').unlink(missing_ok=True)
+                    self.mock('gh', f'''
+case "$1 $2" in
+  'auth status') exit 1 ;;
+  'auth login') read -r; exit {auth_status} ;;
+  'api user') echo alice ;;
+esac
+''')
+                    master, slave = pty.openpty()
+
+                    def terminal_session():
+                        """`terminal_session()` is the child process's independent controlling terminal setup."""
+                        os.setsid()
+                        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+                    try:
+                        os.write(master, b'3\n1\n\n')
+                        command = ['bash'] if invocation == 'piped' else ['bash', str(saved_script)]
+                        result = subprocess.run(
+                            command, input=script if invocation == 'piped' else None,
+                            capture_output=True, text=True, env=self.env,
+                            pass_fds=(slave,), preexec_fn=terminal_session, timeout=30,
+                        )
+                    finally:
+                        os.close(master)
+                        os.close(slave)
+
+                    output = result.stdout + result.stderr
+                    self.assertEqual(result.returncode, int(auth_status != 0), output)
+                    self.assertTrue((self.home / 'node-ran').exists(), output)
+                    self.assertIn('node: ready', result.stdout)
+                    if auth_status:
+                        self.assertIn('GitHub browser authentication failed (exit 17)', result.stderr)
+                        self.assertIn('github setup failed (exit 17)', result.stderr)
+                    else:
+                        self.assertIn('github: ready', result.stdout)
 
 
 if __name__ == '__main__':
