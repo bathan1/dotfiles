@@ -19,8 +19,10 @@ The download URL becomes available once this change is pushed to `main`. You can
 also run `bash setup.sh` from this checkout. Review the downloaded script before
 running it. No repository checkout or adjacent files are required.
 
-The menu offers **GitHub SSH**, **Node.js + TypeScript + pnpm**, their combination,
-**Python 3.15 + uv**, or **all three components**. Choose **4** for Python or **5** for all.
+The checkbox form offers **GitHub SSH**, **Node.js + TypeScript + pnpm**, and
+**Python 3.15 + uv** as independent options. Use **Up/Down** to move, **Space** to
+toggle an option, and **a** to select or clear all three. Press **Enter** to install
+the checked components, or **q** to quit. At least one option must be checked.
 It supports native Ubuntu 22.04+ and Ubuntu under WSL, with Bash and Zsh shell
 initialization. Run it as your normal user: it requests `sudo` for system packages
 only. It needs internet access and an interactive terminal. WSL installations

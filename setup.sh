@@ -477,11 +477,63 @@ setup_python() {
     say 'Python tooling is ready. Open a new Bash/Zsh terminal, then use: uv run --python 3.15 python'
 }
 
+choose_components() (
+    local terminal_state key sequence index cursor=0 total message=''
+    local -a names=(github node python) selected=(0 0 0)
+    local -a labels=('GitHub SSH automation' 'Node.js + TypeScript + pnpm' 'Python 3.15 + uv')
+    terminal_state=$(stty -g <&3) || return 1
+    trap 'stty "$terminal_state" <&3' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    stty -echo -icanon min 1 time 0 <&3 || return 1
+    printf '%s\n' 'Developer environment setup' \
+        'Up/Down: move | Space: toggle | a: select/clear all | Enter: install | q: quit' >&3
+    while true; do
+        total=0
+        for index in "${!names[@]}"; do
+            ((total += selected[index]))
+            printf '\r\033[2K' >&3
+            if ((index == cursor)); then printf '> ' >&3; else printf '  ' >&3; fi
+            if ((selected[index])); then printf '[x]' >&3; else printf '[ ]' >&3; fi
+            printf ' %s\n' "${labels[index]}" >&3
+        done
+        printf '\r\033[2K%s\n' "${message:-Select the components to install.}" >&3
+        IFS= read -rsn1 key <&3 || { fail 'Input closed; rerun from an interactive terminal.'; return 1; }
+        message=''
+        case $key in
+            $'\033')
+                IFS= read -rsn1 -t 0.2 sequence <&3 || sequence=''
+                if [[ $sequence == '[' || $sequence == O ]]; then
+                    IFS= read -rsn1 -t 0.2 sequence <&3 || sequence=''
+                    case $sequence in
+                        A) cursor=$(((cursor + ${#names[@]} - 1) % ${#names[@]})) ;;
+                        B) cursor=$(((cursor + 1) % ${#names[@]})) ;;
+                    esac
+                fi ;;
+            ' ') selected[cursor]=$((1 - selected[cursor])) ;;
+            a|A)
+                for index in "${!names[@]}"; do
+                    selected[index]=$((total != ${#names[@]}))
+                done ;;
+            '')
+                if ((total)); then
+                    for index in "${!names[@]}"; do
+                        if ((selected[index])); then printf '%s\n' "${names[index]}"; fi
+                    done
+                    return 0
+                fi
+                message='Select at least one component, or press q to quit.' ;;
+            q|Q) return 0 ;;
+        esac
+        printf '\033[%sA' "$((${#names[@]} + 1))" >&3
+    done
+)
+
 main() {
     case ${1:-} in
         -h|--help)
             say 'Usage: bash setup.sh'
-            say 'Interactive Ubuntu/WSL setup: GitHub SSH, Node.js + TypeScript + pnpm, Python + uv, or all.'
+            say 'Interactive Ubuntu/WSL checkboxes: GitHub SSH, Node.js + TypeScript + pnpm, and Python + uv.'
             return 0 ;;
         '') ;;
         *) fail 'Unknown argument. Use --help.'; return 1 ;;
@@ -499,28 +551,11 @@ main() {
     trap 'rm -rf -- "$WORK"' EXIT
     trap 'say "Setup interrupted (SIGINT); remaining components were not run." >&2; exit 130' INT
     trap 'say "Setup terminated (SIGTERM); remaining components were not run." >&2; exit 143' TERM
-    say 'Developer environment setup'
-    say '  1) GitHub SSH automation'
-    say '  2) Node.js + TypeScript + pnpm'
-    say '  3) GitHub SSH + Node.js'
-    say '  4) Python 3.15 + uv'
-    say '  5) All'
-    say '  q) Quit'
-    local selection
+    local selection choices
     local -a components=()
-    while true; do
-        ask 'Choose [1/2/3/4/5/q]:' || return 1
-        selection=$REPLY
-        case $selection in
-            1) components=(github); break ;;
-            2) components=(node); break ;;
-            3|'1 2'|'1,2') components=(github node); break ;;
-            4) components=(python); break ;;
-            5) components=(github node python); break ;;
-            q|Q) return 0 ;;
-            *) say 'Enter 1, 2, 3, 4, 5, or q.' ;;
-        esac
-    done
+    choices=$(choose_components) || return $?
+    [[ -n $choices ]] || return 0
+    mapfile -t components <<< "$choices"
     say "Selected: ${components[*]}"
     for selection in "${components[@]}"; do
         (run_job "$selection setup" "setup_$selection") || return $?

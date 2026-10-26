@@ -1,8 +1,14 @@
+import fcntl
 import os
 import pathlib
+import pty
+import select
 import shlex
+import signal
 import subprocess
 import tempfile
+import termios
+import threading
 import unittest
 
 
@@ -42,6 +48,56 @@ class InstallerTests(unittest.TestCase):
         target = self.bin / name
         target.write_text('#!/bin/bash\n' + body + '\n')
         target.chmod(0o755)
+
+    def run_terminal(self, command, keys, script=None, responses=()):
+        """`run_terminal(command, keys, script, responses)` is COMMAND's result and terminal output with KEYS and prompt RESPONSES supplied through a controlling terminal."""
+        master, slave = pty.openpty()
+        original_state = termios.tcgetattr(slave)
+        output = bytearray()
+        finished = threading.Event()
+
+        def terminal_session():
+            """`terminal_session()` is the child process's independent controlling terminal setup."""
+            os.setsid()
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+        def read_terminal():
+            """`read_terminal()` is the terminal output collector and prompt response driver."""
+            pending = list(responses)
+            while True:
+                if select.select([master], [], [], 0.05)[0]:
+                    output.extend(os.read(master, 65536))
+                    if pending and pending[0][0] in output:
+                        _, reply = pending.pop(0)
+                        os.write(master, reply)
+                elif finished.is_set():
+                    return
+
+        reader = threading.Thread(target=read_terminal)
+        try:
+            os.write(master, keys)
+            with subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=self.env, pass_fds=(slave,), preexec_fn=terminal_session,
+            ) as process:
+                reader.start()
+                try:
+                    stdout, stderr = process.communicate(script, timeout=30)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+                    raise
+                result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            self.assertEqual(termios.tcgetattr(slave), original_state)
+            finished.set()
+            reader.join()
+            return result, output.decode()
+        finally:
+            finished.set()
+            if reader.ident is not None:
+                reader.join()
+            os.close(master)
+            os.close(slave)
 
     def test_managed_blocks_preserve_content_and_are_idempotent(self):
         rc = self.home / '.bashrc'
@@ -353,38 +409,35 @@ chmod +x "$UV_INSTALL_DIR/uv"
         self.assertEqual(result.returncode, 22)
         self.assertNotIn('[RUN] Run uv install script', result.stdout)
 
-    def test_python_and_all_menu_choices(self):
-        import fcntl
-        import pty
-        import termios
-
-        for choice, expected in [('4', ['python']), ('5', ['github', 'node', 'python'])]:
-            with self.subTest(choice=choice):
-                master, slave = pty.openpty()
-
-                def terminal_session():
-                    """`terminal_session()` is the child process's independent controlling terminal setup."""
-                    os.setsid()
-                    fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-
-                code = '''
+    def test_checkbox_selections(self):
+        cases = [
+            (b' \n', ['github']),
+            (b'\x1b[B \n', ['node']),
+            (b'\x1b[A \n', ['python']),
+            (b' \x1b[B \n', ['github', 'node']),
+            (b' \x1b[A \n', ['github', 'python']),
+            (b'\x1b[B \x1b[B \n', ['node', 'python']),
+            (b'a\n', ['github', 'node', 'python']),
+            (b'a \n', ['node', 'python']),
+            (b'aa\n\x1b[B \n', ['node']),
+        ]
+        code = """
 setup_github() { echo github >> "$HOME/jobs"; }
 setup_node() { echo node >> "$HOME/jobs"; }
 setup_python() { echo python >> "$HOME/jobs"; }
-ask() { REPLY=''' + choice + '''; }
 main
-'''
-                try:
-                    result = subprocess.run(
-                        ['bash', '-c', 'source ' + shlex.quote(str(SCRIPT)) + '\n' + code],
-                        env=self.env, stdin=slave, capture_output=True, text=True,
-                        preexec_fn=terminal_session, timeout=30,
-                    )
-                finally:
-                    os.close(master)
-                    os.close(slave)
+"""
+        for keys, expected in cases:
+            with self.subTest(keys=keys):
+                result, output = self.run_terminal(
+                    ['bash', '-c', 'source ' + shlex.quote(str(SCRIPT)) + '\n' + code], keys,
+                )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((self.home / 'jobs').read_text().splitlines(), expected)
+                self.assertIn('[ ] GitHub SSH automation', output)
+                self.assertIn('[x]', output)
+                if keys.startswith(b'aa'):
+                    self.assertIn('Select at least one component', output)
                 (self.home / 'jobs').unlink()
 
     def test_job_reports_success_and_preserves_shell_state(self):
@@ -437,65 +490,41 @@ test "$JOB_VALUE" = 'value with spaces'
         self.assertIn('[FAILURE] Update apt package index (exit 19)', result.stderr)
 
     def test_main_stops_after_component_failure(self):
-        code = '''
-ensure_packages() { :; }
+        code = """
 setup_github() { return 1; }
 setup_node() { touch "$HOME/node-ran"; }
-ask() { REPLY=3; }
 main
-'''
-        # A pseudo-terminal supplies /dev/tty without touching the caller's terminal.
-        import fcntl
-        import pty
-        import termios
-
-        master, slave = pty.openpty()
-        self.addCleanup(os.close, master)
-        self.addCleanup(os.close, slave)
-
-        def terminal_session():
-            """`terminal_session()` is the child process's independent controlling terminal setup."""
-            os.setsid()
-            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-
-        result = subprocess.run(['bash', '-c', 'source ' + shlex.quote(str(SCRIPT)) + '\n' + code],
-                                env=self.env, stdin=slave, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, preexec_fn=terminal_session, timeout=30)
+"""
+        result, _ = self.run_terminal(
+            ['bash', '-c', 'source ' + shlex.quote(str(SCRIPT)) + '\n' + code], b' \x1b[B \n',
+        )
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertFalse((self.home / 'node-ran').exists(), result.stdout + result.stderr)
         self.assertIn('[FAILURE] github setup (exit 1)', result.stderr)
         self.assertNotIn('[RUN] node setup', result.stdout)
         self.assertNotIn('All selected setup jobs completed', result.stdout)
 
-    def test_piped_script_starts_menu_and_reads_terminal_input(self):
-        import fcntl
-        import pty
-        import termios
+    def test_piped_script_starts_checkboxes_and_quits_without_installing(self):
+        for keys in (b'q\n', b'aq\n', b'\nq\n'):
+            with self.subTest(keys=keys):
+                result, output = self.run_terminal(['bash'], keys, SCRIPT.read_text())
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('Developer environment setup', output)
+                self.assertIn('[ ] GitHub SSH automation', output)
+                self.assertNotIn('GitHub SSH + Node.js', output)
+                self.assertNotIn('[RUN]', result.stdout)
+                if keys.startswith(b'\n'):
+                    self.assertIn('Select at least one component', output)
 
-        master, slave = pty.openpty()
-        self.addCleanup(os.close, master)
-        self.addCleanup(os.close, slave)
-
-        def terminal_session():
-            """`terminal_session()` is the child process's independent controlling terminal setup."""
-            os.setsid()
-            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-
-        os.write(master, b'q\n')
-        result = subprocess.run(
-            ['bash'], input=SCRIPT.read_text(), capture_output=True, text=True,
-            env=self.env, pass_fds=(slave,), preexec_fn=terminal_session, timeout=30,
+    def test_checkbox_interrupt_restores_terminal_without_installing(self):
+        result, _ = self.run_terminal(
+            ['bash'], b'', SCRIPT.read_text(),
+            responses=[(b'Select the components to install.', b'\x03')],
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('Developer environment setup', result.stdout)
-        self.assertIn('1) GitHub SSH automation', result.stdout)
-        self.assertNotIn('Setting up', result.stdout)
+        self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
+        self.assertNotIn('[RUN]', result.stdout)
 
     def test_both_selection_continues_after_browser_authentication(self):
-        import fcntl
-        import pty
-        import termios
-
         script = SCRIPT.read_text()
         entrypoint = script.index('\nif [[ -z ${BASH_SOURCE')
         overrides = '''
@@ -517,24 +546,11 @@ case "$1 $2" in
   'api user') echo alice ;;
 esac
 ''')
-                    master, slave = pty.openpty()
-
-                    def terminal_session():
-                        """`terminal_session()` is the child process's independent controlling terminal setup."""
-                        os.setsid()
-                        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-
-                    try:
-                        os.write(master, b'3\n1\n\n')
-                        command = ['bash'] if invocation == 'piped' else ['bash', str(saved_script)]
-                        result = subprocess.run(
-                            command, input=script if invocation == 'piped' else None,
-                            capture_output=True, text=True, env=self.env,
-                            pass_fds=(slave,), preexec_fn=terminal_session, timeout=30,
-                        )
-                    finally:
-                        os.close(master)
-                        os.close(slave)
+                    command = ['bash'] if invocation == 'piped' else ['bash', str(saved_script)]
+                    result, _ = self.run_terminal(
+                        command, b' \x1b[B \n', script if invocation == 'piped' else None,
+                        responses=[(b'Account [1-1]:', b'1\n\n')],
+                    )
 
                     output = result.stdout + result.stderr
                     self.assertEqual(result.returncode, auth_status, output)
